@@ -1,0 +1,206 @@
+ WITH appout AS (
+         WITH fao AS (
+                 SELECT o_1.id AS opportunity_id,
+                    min(
+                        CASE
+                            WHEN src.opportunity_status_id = 27 AND src.counted_without_rollback = 1 THEN timezone('America/Chicago'::text, src.first_entry)::date
+                            ELSE NULL::date
+                        END) AS "Payroll Date"
+                   FROM eap.opportunities o_1
+                     LEFT JOIN eap.leads l_1 ON l_1.id = o_1.lead_id
+                     LEFT JOIN reporting.campaign_out_to_paid_designation cd ON cd.campaign_id = l_1.campaign_id
+                     LEFT JOIN reporting.status_rollback_checks src ON src.opportunity_id = o_1.id
+                  WHERE (o_1.product_type_id = ANY (ARRAY[1, 2, 3, 4, 5, 8, 9])) AND COALESCE(cd.pr_out_to_paid, false)
+                  GROUP BY o_1.id
+                )
+         SELECT o.lead_id,
+            o.id AS "Opportunity_ID",
+            o.agent_id,
+            o.insured_id,
+            (a.first_name::text || ' '::text) || a.last_name::text AS agent_name,
+            fao."Payroll Date",
+            o.organization_id,
+            part.name AS partner_name,
+            c.name AS lead_campaign_name
+           FROM eap.opportunities o
+             LEFT JOIN authentication.accounts a ON a.id = o.agent_id
+             JOIN fao ON fao.opportunity_id = o.id
+             LEFT JOIN eap.leads l ON l.id = o.lead_id
+             LEFT JOIN eap.campaigns c ON c.id = l.campaign_id
+             LEFT JOIN eap.partners part ON part.id = c.partner_id
+          ORDER BY fao."Payroll Date"
+        ), appcomplete AS (
+         WITH fac AS (
+                 SELECT o_1.id AS opportunity_id,
+                    min(
+                        CASE
+                            WHEN src.opportunity_status_id = 12 AND src.counted_without_rollback = 1 THEN timezone('America/Chicago'::text, src.first_entry)::date
+                            ELSE NULL::date
+                        END) AS "Payroll Date"
+                   FROM eap.opportunities o_1
+                     LEFT JOIN eap.leads l_1 ON l_1.id = o_1.lead_id
+                     LEFT JOIN reporting.campaign_out_to_paid_designation cd ON cd.campaign_id = l_1.campaign_id
+                     LEFT JOIN reporting.status_rollback_checks src ON src.opportunity_id = o_1.id
+                  WHERE (o_1.product_type_id = ANY (ARRAY[1, 2, 3, 4, 5, 8, 9])) AND COALESCE(cd.pr_out_to_paid, false)
+                  GROUP BY o_1.id
+                )
+         SELECT o.lead_id,
+            o.id AS "Opportunity_ID",
+            o.agent_id,
+            o.insured_id,
+            (a.first_name::text || ' '::text) || a.last_name::text AS agent_name,
+            fac."Payroll Date",
+            o.organization_id,
+            part.name AS partner_name,
+            c.name AS lead_campaign_name
+           FROM eap.opportunities o
+             LEFT JOIN authentication.accounts a ON a.id = o.agent_id
+             JOIN fac ON fac.opportunity_id = o.id
+             LEFT JOIN eap.leads l ON l.id = o.lead_id
+             LEFT JOIN eap.campaigns c ON c.id = l.campaign_id
+             LEFT JOIN eap.partners part ON part.id = c.partner_id
+          ORDER BY fac."Payroll Date"
+        ), v2v AS (
+         WITH knownv2v AS (
+                 SELECT dc.dialer_call_id,
+                    dc.lead_id,
+                    dc.opportunity_id,
+                    dc.contact_id,
+                    COALESCE(lo.agentid, dc.agent_id) AS agent_id,
+                    timezone('America/Chicago'::text, dc.created)::date AS created,
+                    dc.type_name,
+                    row_number() OVER (PARTITION BY dc.lead_id ORDER BY dc.created) AS rn,
+                    dc.organization_id,
+                    part.name AS partner_name,
+                    c.name AS lead_campaign_name,
+			 		dc.campaign_name AS five9_campaign_name
+                   FROM eap.dialer_calls dc
+                     LEFT JOIN reporting.lead_v2v_override lo ON lo.leadid = dc.lead_id
+                     LEFT JOIN reporting.disposition_v2v_designation dv ON dv.disposition_name = dc.disposition_name::text
+                     LEFT JOIN reporting.campaign_v2v_designation cv ON cv.campaign_id = dc.campaign_id::text
+                     LEFT JOIN eap.leads l ON dc.lead_id = l.id
+                     LEFT JOIN eap.campaigns c ON c.id = l.campaign_id
+                     LEFT JOIN eap.partners part ON part.id = c.partner_id
+                  WHERE dc.lead_id IS NOT NULL AND dc.agent_id IS NOT NULL AND (dc.type_name::text = ANY (ARRAY['Outbound'::character varying::text, 'Preview'::character varying::text])) AND COALESCE(dv.pr_v2v_eligible, false) AND COALESCE(cv.pr_v2v_eligible, false) OR dc.lead_id IS NOT NULL AND dc.agent_id IS NOT NULL AND dc.type_name::text = 'Inbound'::text AND dc.call_time > 90 AND COALESCE(cv.pr_v2v_eligible, false)
+                ), inv2v AS (
+                 SELECT dc.dialer_call_id,
+                    dc.lead_id,
+                    dc.opportunity_id,
+                    dc.contact_id,
+                    dc.agent_id,
+                    timezone('America/Chicago'::text, dc.created)::date AS created,
+                    dc.type_name,
+                        CASE
+                            WHEN dc.call_time > 90 THEN 1
+                            ELSE 0
+                        END AS wedgev2v,
+                    dc.organization_id,
+                    part.name AS partner_name,
+                    c.name AS lead_campaign_name,
+					dc.campaign_name as five9_campaign_name
+                   FROM eap.dialer_calls dc
+                     LEFT JOIN reporting.campaign_v2v_designation cv ON cv.campaign_id = dc.campaign_id::text
+                     LEFT JOIN eap.leads l ON dc.lead_id = l.id
+                     LEFT JOIN eap.campaigns c ON c.id = l.campaign_id
+                     LEFT JOIN eap.partners part ON part.id = c.partner_id
+                  WHERE dc.lead_id IS NULL AND dc.agent_id IS NOT NULL AND dc.type_name::text = 'Inbound'::text AND COALESCE(cv.pr_v2v_eligible, false)
+                )
+         SELECT main.dialer_call_id,
+            main.lead_id,
+            main.opportunity_id,
+            main.contact_id,
+            main.agent_id,
+            (a.first_name::text || ' '::text) || a.last_name::text AS agent_name,
+            main.created AS "Payroll Date",
+            main.type_name,
+            main.rn AS "V2V",
+            main.organization_id,
+            main.partner_name,
+            main.lead_campaign_name,
+			main.five9_campaign_name
+           FROM ( SELECT knownv2v.dialer_call_id,
+                    knownv2v.lead_id,
+                    knownv2v.opportunity_id,
+                    knownv2v.contact_id,
+                    knownv2v.agent_id,
+                    knownv2v.created,
+                    knownv2v.type_name,
+                    knownv2v.rn,
+                    knownv2v.organization_id,
+                    knownv2v.partner_name,
+                    knownv2v.lead_campaign_name,
+				 	knownv2v.five9_campaign_name
+                   FROM knownv2v
+                  WHERE knownv2v.rn = 1 AND NOT (knownv2v.lead_id IN ( SELECT l.id
+                           FROM eap.leads l
+                          WHERE ('L'::text || l.aq_migrated_id IN ( SELECT cori_historical_v2v.lead_id
+                                   FROM reporting.cori_historical_v2v))))
+                UNION ALL
+                 SELECT inv2v.dialer_call_id,
+                    inv2v.lead_id,
+                    inv2v.opportunity_id,
+                    inv2v.contact_id,
+                    inv2v.agent_id,
+                    inv2v.created,
+                    inv2v.type_name,
+                    inv2v.wedgev2v,
+                    inv2v.organization_id,
+                    inv2v.partner_name,
+                    inv2v.lead_campaign_name,
+				 	inv2v.five9_campaign_name
+                   FROM inv2v) main
+             LEFT JOIN authentication.accounts a ON a.id = main.agent_id
+        )
+ SELECT 'App Out'::text AS "Metric Type",
+    appout.lead_id,
+    appout."Opportunity_ID",
+    buc.business_unit,
+    appout.agent_name,
+    appout."Payroll Date",
+    NULL::character varying AS dialer_call_id,
+    NULL::character varying AS type_name,
+    NULL::bigint AS "V2V",
+    appout.insured_id,
+    appout.organization_id,
+    appout.partner_name,
+    appout.lead_campaign_name,
+	NULL::character varying as five9_campaign_name
+   FROM appout
+     LEFT JOIN reporting.business_unit_crosswalk buc ON buc.agent_id = appout.agent_id AND appout."Payroll Date" >= buc.start_date AND appout."Payroll Date" <= buc.end_date
+  WHERE appout."Payroll Date" >= '2020-01-01'::date
+UNION ALL
+ SELECT 'V2V'::text AS "Metric Type",
+    v2v.lead_id,
+    v2v.opportunity_id AS "Opportunity_ID",
+    buc.business_unit,
+    v2v.agent_name,
+    v2v."Payroll Date",
+    v2v.dialer_call_id,
+    v2v.type_name,
+    v2v."V2V",
+    NULL::bigint AS insured_id,
+    v2v.organization_id,
+    v2v.partner_name,
+    v2v.lead_campaign_name,
+	NULL::character varying as five9_campaign_name
+   FROM v2v
+     LEFT JOIN reporting.business_unit_crosswalk buc ON buc.agent_id = v2v.agent_id AND v2v."Payroll Date" >= buc.start_date AND v2v."Payroll Date" <= buc.end_date
+  WHERE v2v."V2V" > 0 AND v2v."Payroll Date" >= '2020-01-01'::date
+UNION ALL
+ SELECT 'App Complete'::text AS "Metric Type",
+    appcomplete.lead_id,
+    appcomplete."Opportunity_ID",
+    buc.business_unit,
+    appcomplete.agent_name,
+    appcomplete."Payroll Date",
+    NULL::character varying AS dialer_call_id,
+    NULL::character varying AS type_name,
+    NULL::bigint AS "V2V",
+    appcomplete.insured_id,
+    appcomplete.organization_id,
+    appcomplete.partner_name,
+    appcomplete.lead_campaign_name,
+	NULL::character varying AS five9_campaign_name
+   FROM appcomplete
+     LEFT JOIN reporting.business_unit_crosswalk buc ON buc.agent_id = appcomplete.agent_id AND appcomplete."Payroll Date" >= buc.start_date AND appcomplete."Payroll Date" <= buc.end_date
+  WHERE appcomplete."Payroll Date" >= '2020-01-01'::date;
